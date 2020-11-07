@@ -100,40 +100,55 @@ def detect(save_img=False):
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += '%g %ss, ' % (n, names[int(c)])  # add to string
 
-                # merge classes with same coordinates
+                # TODO: merge classes with same coordinates
                 bbox_cls = {}
                 for *xyxy, conf, cls in reversed(det):
                     xyxy = list(map(float, xyxy))
                     coord_str = ','.join(list(map(str, xyxy)))
                     bbox_cls.setdefault(coord_str, []).append([int(cls), float(conf)])
+                # print('\nbefore merge: ', bbox_cls)
 
-                # merge bboxes based on IOU
-                bbox_cls_copy = bbox_cls.copy()
-                # print('before: ', bbox_cls_copy)
-                keys = list(bbox_cls.keys())
-                if len(keys) > 1:
-                    for m in range(len(keys)):
-                        for n in range(m+1, len(keys)):
-                            boxm = list(map(float, keys[m].split(',')))
-                            boxn = list(map(float, keys[n].split(',')))
-                            iou = box_iou(torch.Tensor([boxm]), torch.Tensor([boxn]))
-                            if iou > 0.8:
-                                del bbox_cls_copy[keys[m]]
-                                del bbox_cls_copy[keys[n]]
-                                new_coord = torch.Tensor([boxm, boxn]).mean(dim=0).tolist()
-                                new_key = ','.join(map(str, new_coord))
-                                bbox_cls_copy[new_key] = bbox_cls[keys[m]] + bbox_cls[keys[n]]
-                # print('after: ', bbox_cls_copy)
+                # TODO: merge bboxes based on IOU
+                bbox_cls_copy = {}
+                while len(bbox_cls.keys()) > 0:
+                    keys = list(bbox_cls.keys())
+                    merge_lst = []
+                    box = list(map(float, keys[0].split(',')))
+                    for j in range(1, len(keys)):
+                        boxj = list(map(float, keys[j].split(',')))
+                        iou = box_iou(torch.Tensor([box]), torch.Tensor([boxj]))
+                        if iou > 0.8:
+                            merge_lst.append([j, boxj, bbox_cls[keys[j]]])
 
+                    if len(merge_lst) > 0:
+                        coords = [box, ]
+                        values = bbox_cls[keys[0]]
+                        for j, boxj, valj in merge_lst:
+                            coords.append(boxj)
+                            values.extend(valj)
+                            del bbox_cls[keys[j]]
+
+                        new_coord = torch.Tensor(coords).mean(dim=0).tolist()
+                        new_key = ','.join(map(str, new_coord))
+                        bbox_cls_copy[new_key] = values
+                    else:
+                        bbox_cls_copy[keys[0]] = bbox_cls[keys[0]]
+
+                    del bbox_cls[keys[0]]
+                # print('after merge: ', bbox_cls_copy)
+
+                # TODO: keep at most two classes
                 for key, value in bbox_cls_copy.items():
                     xyxy = list(map(float, key.split(',')))
-                    if len(value) >= 2:
-                        value.sort(key=lambda x: x[-1], reverse=True)
-                        cls1, conf = value[0]
-                        cls2 = value[1][0]
-                    else:
-                        cls1, conf = value[0]
-                        cls2 = -1
+                    value.sort(key=lambda x: x[1], reverse=True)  # based on conf
+                    cls1, conf = value[0]
+                    cls2 = -1
+                    while len(value) > 1:
+                        if (cls1 in [0, 1, 2] and value[1][0] in [3, 4, 5]) or \
+                                (cls1 in [3, 4, 5] and value[1][0] in [0, 1, 2]):
+                            cls2 = value[1][0]
+                            break
+                        del value[1]
 
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.Tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
@@ -143,9 +158,11 @@ def detect(save_img=False):
 
                     if save_img or view_img:  # Add bbox to image
                         if cls2 == -1:
-                            cls_str = names[int(cls1)]
+                            # cls_str = names[int(cls1)]
+                            cls_str = str(cls1)
                         else:
-                            cls_str = ','.join([names[int(cls1)], names[int(cls2)]])
+                            # cls_str = ','.join([names[int(cls1)], names[int(cls2)]])
+                            cls_str = ','.join(sorted([str(cls1), str(cls2)]))
                         label = cls_str + ' %.2f' % conf
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls1)], line_thickness=3)
             # Print time (inference + NMS)
