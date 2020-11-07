@@ -88,7 +88,7 @@ def check_anchors(dataset, model, thr=4.0, imgsz=640):
     m = model.module.model[-1] if hasattr(model, 'module') else model.model[-1]  # Detect()
     shapes = imgsz * dataset.shapes / dataset.shapes.max(1, keepdims=True)
     scale = np.random.uniform(0.9, 1.1, size=(shapes.shape[0], 1))  # augment scale
-    wh = torch.tensor(np.concatenate([l[:, 3:5] * s for s, l in zip(shapes * scale, dataset.labels)])).float()  # wh
+    wh = torch.tensor(np.concatenate([l[:, 3:5].astype(np.float32) * s for s, l in zip(shapes * scale, dataset.labels)])).float()  # wh
 
     def metric(k):  # compute metric
         r = wh[:, None] / k[None]
@@ -169,8 +169,17 @@ def labels_to_class_weights(labels, nc=80):
         return torch.Tensor()
 
     labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
-    weights = np.bincount(classes, minlength=nc)  # occurrences per class
+    # classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+    classes = []
+    for label in labels[:, 0]:
+        if isinstance(label, list):
+            classes.extend(label)
+        elif isinstance(label, int):
+            classes.append(label)
+        else:
+            raise ValueError
+    classes = np.array(classes, dtype=np.int)
+    weights = np.bincount(classes[classes > 0], minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
     # gpi = ((320 / 32 * np.array([1, 2, 4])) ** 2 * 3).sum()  # gridpoints per image
@@ -521,7 +530,12 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             # Classification
             if model.nc > 1:  # cls loss (only if multiple classes)
                 t = torch.full_like(ps[:, 5:], cn, device=device)  # targets
-                t[range(n), tcls[i]] = cp
+                for target_id in range(n):
+                    for cls_id in range(2):
+                        if tcls[i][target_id, cls_id] < 0:
+                            continue
+                        t[target_id, tcls[i][target_id, cls_id]] = cp
+                # print(f'label: {tcls[i][0]}, one-hot: {t[0]}:')
                 lcls += BCEcls(ps[:, 5:], t)  # BCE
 
             # Append targets to text file
@@ -545,7 +559,7 @@ def build_targets(p, targets, model):
     det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
     na, nt = det.na, targets.shape[0]  # number of anchors, targets
     tcls, tbox, indices, anch = [], [], [], []
-    gain = torch.ones(7, device=targets.device)  # normalized to gridspace gain
+    gain = torch.ones(8, device=targets.device)  # normalized to gridspace gain
     ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt)
     targets = torch.cat((targets.repeat(na, 1, 1), ai[:, :, None]), 2)  # append anchor indices
 
@@ -557,20 +571,20 @@ def build_targets(p, targets, model):
 
     for i in range(det.nl):
         anchors = det.anchors[i]
-        gain[2:6] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
+        gain[3:7] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
         # Match targets to anchors
         t = targets * gain
         if nt:
             # Matches
-            r = t[:, :, 4:6] / anchors[:, None]  # wh ratio
+            r = t[:, :, 5:7] / anchors[:, None]  # wh ratio
             j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare
             # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n)=wh_iou(anchors(3,2), gwh(n,2))
             t = t[j]  # filter
 
             # Offsets
-            gxy = t[:, 2:4]  # grid xy
-            gxi = gain[[2, 3]] - gxy  # inverse
+            gxy = t[:, 3:5]  # grid xy
+            gxi = gain[[3, 4]] - gxy  # inverse
             j, k = ((gxy % 1. < g) & (gxy > 1.)).T
             l, m = ((gxi % 1. < g) & (gxi > 1.)).T
             j = torch.stack((torch.ones_like(j), j, k, l, m))
@@ -581,14 +595,17 @@ def build_targets(p, targets, model):
             offsets = 0
 
         # Define
-        b, c = t[:, :2].long().T  # image, class
-        gxy = t[:, 2:4]  # grid xy
-        gwh = t[:, 4:6]  # grid wh
+        b = t[:, 0].long().T  # image
+        c = t[:, 1:3].long()  # class
+        # print('b:', b.shape)
+        # print('c:', c.shape)
+        gxy = t[:, 3:5]  # grid xy
+        gwh = t[:, 5:7]  # grid wh
         gij = (gxy - offsets).long()
         gi, gj = gij.T  # grid xy indices
 
         # Append
-        a = t[:, 6].long()  # anchor indices
+        a = t[:, 7].long()  # anchor indices
         indices.append((b, a, gj, gi))  # image, anchor, grid indices
         tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
         anch.append(anchors[a])  # anchors
@@ -633,15 +650,18 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, merge=False, 
 
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
+            # print(x.shape)
             i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
+            # print(i.shape, j.shape)
             x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
+            # print(x.shape)
         else:  # best class only
             conf, j = x[:, 5:].max(1, keepdim=True)
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
 
-        # Filter by class
-        if classes:
-            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
+        # # Filter by class
+        # if classes:
+        #     x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
 
         # Apply finite constraint
         # if not torch.isfinite(x).all():
@@ -935,18 +955,30 @@ def output_to_target(output, width, height):
         output = output.cpu().numpy()
 
     targets = []
+    bbox_cls = {}
     for i, o in enumerate(output):
         if o is not None:
             for pred in o:
                 box = pred[:4]
-                w = (box[2] - box[0]) / width
-                h = (box[3] - box[1]) / height
-                x = box[0] / width + w / 2
-                y = box[1] / height + h / 2
-                conf = pred[4]
+                w = float((box[2] - box[0]) / width)
+                h = float((box[3] - box[1]) / height)
+                x = float(box[0] / width + w / 2)
+                y = float(box[1] / height + h / 2)
+                conf = float(pred[4])
                 cls = int(pred[5])
+                coord_str = ','.join(map(str, [x, y, w, h]))
+                bbox_cls.setdefault(coord_str, []).append([i, cls, conf])
 
-                targets.append([i, cls, x, y, w, h, conf])
+    for key, value in bbox_cls.items():
+        x, y, w, h = list(map(float, key.split(',')))
+        if len(value) >= 2:
+            value.sort(key=lambda x: x[2], reverse=True)
+            i, cls1, conf = value[0]
+            cls2 = value[1][1]
+        else:
+            i, cls1, conf = value[0]
+            cls2 = -1
+        targets.append([i, cls1, cls2, x, y, w, h, conf])
 
     return np.array(targets)
 
@@ -1068,21 +1100,23 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
         mosaic[block_y:block_y + h, block_x:block_x + w, :] = img
         if len(targets) > 0:
             image_targets = targets[targets[:, 0] == i]
-            boxes = xywh2xyxy(image_targets[:, 2:6]).T
-            classes = image_targets[:, 1].astype('int')
-            gt = image_targets.shape[1] == 6  # ground truth if no conf column
-            conf = None if gt else image_targets[:, 6]  # check for confidence presence (gt vs pred)
+            # print(image_targets)
+            boxes = xywh2xyxy(image_targets[:, 3:7]).T
+            classes = image_targets[:, 1:3].astype('int')
+            gt = image_targets.shape[1] == 7  # ground truth if no conf column
+            conf = None if gt else image_targets[:, 7]  # check for confidence presence (gt vs pred)
 
             boxes[[0, 2]] *= w
             boxes[[0, 2]] += block_x
             boxes[[1, 3]] *= h
             boxes[[1, 3]] += block_y
             for j, box in enumerate(boxes.T):
-                cls = int(classes[j])
+                cls = int(classes[j][0])
                 color = color_lut[cls % len(color_lut)]
-                cls = names[cls] if names else cls
+                # cls = names[cls] if names else cls
+                cls_str = ','.join(map(str, list(classes[j][classes[j] != -1])))
                 if gt or conf[j] > 0.3:  # 0.3 conf thresh
-                    label = '%s' % cls if gt else '%s %.1f' % (cls, conf[j])
+                    label = '%s' % cls_str if gt else '%s %.1f' % (cls_str, conf[j])
                     plot_one_box(box, mosaic, label=label, color=color, line_thickness=tl)
 
         # Draw image filename labels

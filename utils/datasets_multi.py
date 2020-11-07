@@ -418,11 +418,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         for i, file in pbar:
             l = self.labels[i]  # label
             if l is not None and l.shape[0]:
+                # print('+++++++', l)
                 assert l.shape[1] == 5, '> 5 label columns: %s' % file
-                assert (l >= 0).all(), 'negative labels: %s' % file
+                # assert (l >= 0).all(), 'negative labels: %s' % file
                 assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
-                if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows
-                    nd += 1  # print('WARNING: duplicate rows in %s' % self.label_files[i])  # duplicate rows
+                # if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows
+                #     nd += 1  # print('WARNING: duplicate rows in %s' % self.label_files[i])  # duplicate rows
                 if single_cls:
                     l[:, 0] = 0  # force dataset into single-class mode
                 self.labels[i] = l
@@ -494,7 +495,15 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 assert (shape[0] > 9) & (shape[1] > 9), 'image size <10 pixels'
                 if os.path.isfile(label):
                     with open(label, 'r') as f:
-                        l = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)  # labels
+                        # l = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
+                        l = []
+                        for line in f.read().splitlines():
+                            line = line.split()
+                            category = list(map(int, line[0].split(',')))
+                            coord = list(map(float, line[1:]))
+                            l.append([category] + coord)
+                        l = np.array(l, dtype=object)
+
                 if len(l) == 0:
                     l = np.zeros((0, 5), dtype=np.float32)
                 x[img] = [l, shape]
@@ -502,7 +511,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 print('WARNING: Ignoring corrupted image and/or label %s: %s' % (img, e))
 
         x['hash'] = get_hash(self.label_files + self.img_files)
-        torch.save(x, path)  # save for next time
+        # torch.save(x, path)  # save for next time
         return x
 
     def __len__(self):
@@ -588,8 +597,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
 
-        labels_out = torch.zeros((nL, 6))
+        labels_out = torch.zeros((nL, 7))
         if nL:
+            category = np.array(list(labels[:, 0]))
+            coord = np.array(labels[:, 1:], dtype=np.float32)
+            labels = np.concatenate((category, coord), axis=1)
             labels_out[:, 1:] = torch.from_numpy(labels)
 
         # Convert
