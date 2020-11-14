@@ -165,6 +165,7 @@ def detect(save_img=False):
                             cls_str = ','.join(sorted([str(cls1), str(cls2)]))
                         label = cls_str + ' %.2f' % conf
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls1)], line_thickness=3)
+
             # Print time (inference + NMS)
             print('%sDone. (%.3fs)' % (s, t2 - t1))
 

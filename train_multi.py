@@ -184,15 +184,14 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                                        rank=-1, world_size=opt.world_size, workers=opt.workers)[0]  # testloader
 
         if not opt.resume:
-            # TODO: support 'multi-label'
-            # labels = np.concatenate(dataset.labels, 0)
-            # c = torch.tensor(labels[:, 0])  # classes
-            # # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
-            # # model._initialize_biases(cf.to(device))
-            # plot_labels(labels, save_dir=log_dir)
-            # if tb_writer:
-            #     # tb_writer.add_hparams(hyp, {})  # causes duplicate https://github.com/ultralytics/yolov5/pull/384
-            #     tb_writer.add_histogram('classes', c, 0)
+            labels = np.concatenate(dataset.labels, 0)
+            c = torch.tensor(np.concatenate(labels[:, 0], 0))  # classes
+            # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
+            # model._initialize_biases(cf.to(device))
+            plot_labels(labels, save_dir=log_dir)
+            if tb_writer:
+                # tb_writer.add_hparams(hyp, {})  # causes duplicate https://github.com/ultralytics/yolov5/pull/384
+                tb_writer.add_histogram('classes', c, 0)
 
             # Anchors
             if not opt.noautoanchor:
@@ -220,7 +219,6 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
-        # TODO: support 'multi-label'
         # Update image weights (optional)
         if opt.image_weights:
             # Generate indices
@@ -316,7 +314,8 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
             if ema:
                 ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride'])
             final_epoch = epoch + 1 == epochs
-            if not opt.notest or final_epoch:  # Calculate mAP
+            # if not opt.notest or final_epoch:  # Calculate mAP
+            if not opt.notest:  # Calculate mAP
                 results, maps, times = test.test(opt.data,
                                                  batch_size=total_batch_size,
                                                  imgsz=imgsz_test,

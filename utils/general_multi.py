@@ -178,8 +178,8 @@ def labels_to_class_weights(labels, nc=80):
             classes.append(label)
         else:
             raise ValueError
-    classes = np.array(classes, dtype=np.int)
-    weights = np.bincount(classes[classes > 0], minlength=nc)  # occurrences per class
+    classes = np.array(classes).astype(np.int)
+    weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
     # gpi = ((320 / 32 * np.array([1, 2, 4])) ** 2 * 3).sum()  # gridpoints per image
@@ -194,7 +194,8 @@ def labels_to_class_weights(labels, nc=80):
 def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
     # Produces image weights based on class mAPs
     n = len(labels)
-    class_counts = np.array([np.bincount(labels[i][:, 0].astype(np.int), minlength=nc) for i in range(n)])
+    # class_counts = np.array([np.bincount(labels[i][:, 0].astype(np.int), minlength=nc) for i in range(n)])
+    class_counts = np.array([np.bincount(np.concatenate(labels[i][:, 0], 0).astype(np.int), minlength=nc) for i in range(n)])
     image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
     # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
     return image_weights
@@ -1218,7 +1219,8 @@ def plot_study_txt(f='study.txt', x=None):  # from utils.general import *; plot_
 def plot_labels(labels, save_dir=''):
     # plot dataset labels
     c, b = labels[:, 0], labels[:, 1:].transpose()  # classes, boxes
-    nc = int(c.max() + 1)  # number of classes
+    c = np.concatenate(c, 0)
+    nc = int(max(c) + 1)  # number of classes
 
     fig, ax = plt.subplots(2, 2, figsize=(8, 8), tight_layout=True)
     ax = ax.ravel()
