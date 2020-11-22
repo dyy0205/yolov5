@@ -491,7 +491,7 @@ class BCEBlurWithLogitsLoss(nn.Module):
 def compute_loss(p, targets, model):  # predictions, targets, model
     device = targets.device
     lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
-    tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets
+    tcls, tbox, indices, anchors, valid = build_targets(p, targets, model)  # targets
     h = model.hyp  # hyperparameters
 
     # Define criteria
@@ -531,14 +531,23 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 
             # Classification
             if model.nc > 1:  # cls loss (only if multiple classes)
-                t = torch.full_like(ps[:, 5:], cn, device=device)  # targets
-                for target_id in range(n):
-                    for cls_id in range(2):
-                        if tcls[i][target_id, cls_id] < 0:
-                            continue
-                        t[target_id, tcls[i][target_id, cls_id]] = cp
-                # print(f'label: {tcls[i][0]}, one-hot: {t[0]}:')
-                lcls += BCEcls(ps[:, 5:], t)  # BCE
+                if len(valid) == 0:
+                    ps_valid = ps[:, 5:]
+                    tcls_valid = tcls[i]
+                else:
+                    cls_valid = valid[i].nonzero(as_tuple=False).squeeze(1)
+                    ps_valid = ps[cls_valid, 5:]
+                    tcls_valid = tcls[i][cls_valid]
+
+                if ps_valid.shape[0] != 0:
+                    t = torch.full_like(ps_valid, cn, device=device)  # targets
+                    for target_id in range(ps_valid.shape[0]):
+                        for cls_id in range(2):
+                            if tcls_valid[target_id, cls_id] < 0:
+                                continue
+                            t[target_id, tcls_valid[target_id, cls_id]] = cp
+                    # print(f'label: {tcls[i][0]}, one-hot: {t[0]}:')
+                    lcls += BCEcls(ps_valid, t)  # BCE
 
             # Append targets to text file
             # with open('targets.txt', 'a') as file:
@@ -560,8 +569,9 @@ def build_targets(p, targets, model):
     # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
     det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
     na, nt = det.na, targets.shape[0]  # number of anchors, targets
-    tcls, tbox, indices, anch = [], [], [], []
-    gain = torch.ones(8, device=targets.device)  # normalized to gridspace gain
+    num_cols = len(targets[0])
+    tcls, tbox, indices, anch, valid = [], [], [], [], []
+    gain = torch.ones(num_cols + 1, device=targets.device)  # normalized to gridspace gain
     ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt)
     targets = torch.cat((targets.repeat(na, 1, 1), ai[:, :, None]), 2)  # append anchor indices
 
@@ -599,21 +609,22 @@ def build_targets(p, targets, model):
         # Define
         b = t[:, 0].long().T  # image
         c = t[:, 1:3].long()  # class
-        # print('b:', b.shape)
-        # print('c:', c.shape)
         gxy = t[:, 3:5]  # grid xy
         gwh = t[:, 5:7]  # grid wh
         gij = (gxy - offsets).long()
         gi, gj = gij.T  # grid xy indices
 
         # Append
-        a = t[:, 7].long()  # anchor indices
+        a = t[:, 7].long() if num_cols == 7 else t[:, 8].long()  # anchor indices
         indices.append((b, a, gj, gi))  # image, anchor, grid indices
         tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
         anch.append(anchors[a])  # anchors
         tcls.append(c)  # class
 
-    return tcls, tbox, indices, anch
+        if num_cols == 8:
+            valid.append(t[:, 7].long())
+
+    return tcls, tbox, indices, anch, valid
 
 
 def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, merge=False, classes=None, agnostic=False):
@@ -652,11 +663,8 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, merge=False, 
 
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
-            # print(x.shape)
             i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
-            # print(i.shape, j.shape)
             x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
-            # print(x.shape)
         else:  # best class only
             conf, j = x[:, 5:].max(1, keepdim=True)
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
@@ -1191,7 +1199,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
             # print(image_targets)
             boxes = xywh2xyxy(image_targets[:, 3:7]).T
             classes = image_targets[:, 1:3].astype('int')
-            gt = image_targets.shape[1] == 7  # ground truth if no conf column
+            gt = image_targets.shape[1] in [7, 8]  # ground truth if no conf column
             conf = None if gt else image_targets[:, 7]  # check for confidence presence (gt vs pred)
 
             boxes[[0, 2]] *= w

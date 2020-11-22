@@ -169,9 +169,11 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank)
 
     # Trainloader
+    cls_valid_thr = opt.cls_valid_thr if opt.cls_valid else None
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect,
-                                            rank=rank, world_size=opt.world_size, workers=opt.workers)
+                                            rank=rank, world_size=opt.world_size, workers=opt.workers,
+                                            cls_valid_thr=cls_valid_thr)
     nb = len(dataloader)  # number of batches
     # mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     # assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -415,6 +417,8 @@ if __name__ == '__main__':
     parser.add_argument('--logdir', type=str, default='runs/', help='logging directory')
     parser.add_argument('--log-imgs', type=int, default=10, help='number of images for W&B logging, max 100')
     parser.add_argument('--workers', type=int, default=8, help='maximum number of dataloader workers')
+    parser.add_argument('--cls_valid_thr', type=float, default=0.8, help='area ratio = box area after aug / before')
+    parser.add_argument('--cls_valid', action='store_true', help='whether to compute cls loss when using Mosaic')
 
     opt = parser.parse_args()
 
